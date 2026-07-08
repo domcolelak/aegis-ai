@@ -2,114 +2,176 @@
 
 Aegis AI is an autonomous incident investigation engine written in Python. It ingests large
 volumes of distributed system logs, normalizes and correlates events, constructs a weighted
-causal evidence graph, and orchestrates specialized AI investigators that determine probable
-root causes and propose remediation.
+causal evidence graph, and orchestrates specialized AI investigators that determine the
+probable root cause — validated, audited, and streamed live over WebSocket.
 
-> **Status: under active development.** This README describes only what exists today;
-> the full MVP design lives in the architecture notes and lands piece by piece.
+```text
+ROOT CAUSE PROBABILITY: 82.0%
+Database sessions leak in booking-api's payment-timeout path; under Stripe
+latency and elevated traffic the connection pool and PostgreSQL slots
+exhaust, cascading into a retry storm and user-visible outage.
 
-## Implemented so far
+FAILURE CHAIN:
+  payments     stripe requests slow down and time out
+  booking-api  timeout path leaks sessions; QueuePool exhausts
+  postgres     connection slots run out (FATAL)
+  worker-1     retry storm amplifies the failure
+  nginx        upstream timeouts: user-visible outage
+```
 
-- **Core primitives** (`aegis.core`)
-  - `Channel[T]` — bounded, closable pipeline channel; the bound is what gives the ingestion
-    pipeline backpressure end to end.
-  - `retry_async` — exponential backoff with full jitter and a shared cross-call *retry budget*
-    (a tool that diagnoses retry storms must not cause them).
-  - Typed exception hierarchy rooted at `AegisError`.
-- **Event domain model** (`aegis.events`) — frozen, slotted dataclasses for the hot path:
-  `LogEvent`, `RawLogEvent`, `EventSignature` (masked log templates as the deduplication unit),
-  `Severity`, `EventKind`, `TimeWindow`.
-- **Ingestion** (`aegis.ingestion`) — `LogSource` protocol (async generators, deterministic
-  `aclose` on every exit path); `FileLogSource` (chunked reads, never loads the file),
-  `StructuredJsonLogSource`, `DockerReplaySource` (consumes Docker's on-disk `json-file`
-  format, no daemon needed); a `TaskGroup` supervisor with fail-fast semantics.
-- **Parsing & normalization** (`aegis.parsing`) — pure, picklable parse functions offloaded to
-  a `ProcessPoolExecutor` (regex + template extraction is GIL-bound at scale); size/latency
-  batcher; format dispatch for plain text, NDJSON, and Docker envelopes; drain-style message
-  masking; transparent ordered rules for `EventKind` classification.
-- **Anomaly detection** (`aegis.detection`) — four deterministic detectors (frequency spike
-  via per-signature EWMA z-scores, new error signature with a learning phase, error-ratio
-  deviation with volume-weighted baselines, retry storm), all windowed on event time and
-  emitting `AnomalyCluster`s that carry the numbers that triggered them.
-- **Correlation** (`aegis.correlation`) — five weighted strategies (temporal proximity,
-  trace/request linkage, service dependency direction, semantic template similarity, known
-  error-propagation cascades) behind a `CorrelationStrategy` protocol; candidate generation
-  blocks on trace/service/template keys so the engine never scores O(n²) pairs. Every edge
-  keeps its per-strategy score breakdown. This is evidence-weighted plausibility, not causal
-  inference — and the docs say so.
-- **Causal evidence graph** (`aegis.graph`) — NetworkX DiGraph with SCC condensation (retry
-  storms are real cycles), root-candidate ranking (blast radius × earliness × impact),
-  strongest-chain extraction (Dijkstra over −log edge scores), and a clock-skew-tolerant
-  topological timeline.
-- **AI investigation** (`aegis.investigation`) — multi-agent root-cause analysis on top of the
-  deterministic evidence, never instead of it:
-  - `LLMProvider` protocol with an Anthropic adapter, a deterministic `ScriptedProvider`
-    (tests and offline demo never touch a paid API), and resilience decorators (semaphore
-    concurrency cap, transient-only retries with backoff and a shared retry budget);
-  - a typed tool registry — Pydantic argument models double as the JSON schema shown to the
-    model; per-call timeouts, per-agent tool budgets, and a full audit trail of every
-    execution; seven built-in tools (`inspect_event_window`, `search_events`,
-    `find_similar_events`, `analyze_db_connections`, `calculate_error_rate`,
-    `inspect_dependency_graph`, `get_anomaly_details`);
-  - a generic `Agent[TInput, TFinding]` ABC owning the guarded tool loop (budget enforcement,
-    max turns, JSON validation with one correction attempt);
-  - four agents: Log Analyst and Database Investigator run concurrently in a `TaskGroup`,
-    the Devil's Advocate attacks their findings, and the tool-less Incident Commander
-    synthesizes a validated `RootCauseAssessment`;
-  - typed progress events published at every phase for the upcoming WebSocket stream.
-- **Persistence** (`aegis.db`) — async SQLAlchemy 2.x over PostgreSQL, hand-reviewed Alembic
-  migration verified in CI against real PostgreSQL+pgvector. Scale posture for `log_events`:
-  BRIN on timestamp, composite `(service, timestamp)` B-tree, partial trace-id index,
-  templates normalized into `event_signatures`, and COPY-based bulk insert through the raw
-  asyncpg connection. Range partitioning is documented as the ~50–100M row step, not built
-  speculatively.
-- **Incident memory** (`aegis.memory`) — pgvector retrieval with an honest scope statement:
-  new-incident summaries are embedded and the top-k similar *historical incidents* (root
-  cause + remediation) become provenance-carrying evidence for the investigators. Embeddings
-  via an `EmbeddingProvider` protocol: Voyage AI in production, a deterministic
-  token-hashing embedder for tests and offline demos (same 1024 dimensions, drop-in).
-- **API + WebSocket** (`aegis.api`) — FastAPI surface with `create_app` as the explicit
-  composition root (no DI framework, no globals): `POST /api/v1/incidents/analyze` pre-creates
-  the incident and runs the whole slice as a tracked background task; read endpoints for
-  incidents, the causal graph, and the investigation; source registration; and
-  `/ws/incidents/{id}` streaming typed progress events. The in-process topic bus hides behind
-  publish/subscribe seams (Redis pub/sub can replace it) and drops oldest events for slow
-  consumers instead of blocking the pipeline. With the default `scripted` LLM provider the
-  entire system runs offline — no API key needed for the demo.
-- **Observability** (`aegis.observability`) — a system that investigates incidents must not be
-  a black box itself: structured JSON logs (structlog) with contextvars-propagated
-  request/incident/investigation IDs on every line; a `Metrics` protocol with a Prometheus
-  implementation (`/metrics`) covering `logs_ingested_total`, `anomaly_clusters_total`,
-  `correlation_edges_created_total`, `investigation_duration_seconds`,
-  `agent_tool_calls_total`, `ai_tokens_used_total`, `active_investigations`, and
-  per-route HTTP counters; token usage metered across every agent turn.
-- **Synthetic incident** (`aegis.synthetic`) — a seeded, deterministic five-service incident
-  (traffic spike → Stripe latency → session leak → pool exhaustion → retry storm → outage)
-  in four real log formats, driving the end-to-end test: the pipeline ranks the trigger
-  region as the top root candidate and routes the strongest causal chain through the pool
-  exhaustion, with no mocks.
+That output is real: `uv run python scripts/demo.py` produces it in about a second, offline,
+with no API key and no database.
 
-## Design rules
+## Architecture
 
-- Internal hot-path types are frozen `slots=True` dataclasses; **Pydantic is reserved for trust
-  boundaries** (API schemas, LLM output, tool arguments, configuration).
-- asyncio owns everything that waits; the process pool owns only what genuinely computes.
-- LLM output is never trusted unvalidated; agents talk to providers only through protocols.
+```mermaid
+flowchart TB
+    subgraph ingest["Ingestion (asyncio)"]
+        S1[FileLogSource] --> CH
+        S2[StructuredJsonLogSource] --> CH
+        S3[DockerReplaySource] --> CH
+        CH[bounded Channel<br/>backpressure]
+    end
+    CH --> B[Batcher]
+    B --> PP["ProcessPoolExecutor<br/>parse + normalize + mask templates<br/>(CPU-bound)"]
+    PP --> PG[(PostgreSQL<br/>COPY bulk insert)]
+    PP --> DET["Anomaly detectors<br/>EWMA baselines, event-time windows"]
+    DET --> COR["Correlation engine<br/>5 weighted strategies,<br/>blocked candidate pairs"]
+    COR --> G["Causal evidence graph<br/>SCC condensation, root ranking,<br/>strongest chain (NetworkX)"]
+    G --> EV[EvidenceBundle]
+    MEM[(pgvector<br/>incident memory)] -->|top-k similar incidents| EV
+    EV --> ORCH["Investigation orchestrator (TaskGroup)"]
+    subgraph agents["AI investigators"]
+        LA[Log Analyst] --- DB[DB Investigator]
+        DA[Devil's Advocate]
+        IC[Incident Commander]
+    end
+    ORCH --> agents
+    agents <-->|"typed, audited,<br/>budgeted tools"| EV
+    agents --> RCA["RootCauseAssessment<br/>(Pydantic-validated)"]
+    RCA --> PG
+    RCA --> MEM
+    ORCH -->|typed progress events| WS["WebSocket<br/>/ws/incidents/{id}"]
+```
+
+The design principle throughout: **deterministic Python reduces the problem space; AI
+interprets what remains.** Agents never see raw logs — they receive an `EvidenceBundle`
+(anomaly clusters, ranked root candidates, strongest causal chains, similar historical
+incidents) and drill deeper only through typed, audited, budgeted tools.
+
+## Quickstart
+
+```bash
+# Offline demo -- no database, no API key, ~1 second
+uv sync
+uv run python scripts/demo.py
+
+# Full stack (API + PostgreSQL/pgvector + migrations)
+docker compose up --build
+```
+
+Then:
+
+```bash
+# Start an analysis (202 Accepted; work runs as a background task)
+curl -X POST localhost:8000/api/v1/incidents/analyze \
+     -H "content-type: application/json" -d '{"synthetic": true}'
+# -> {"incident_id": "...", "investigation_id": "...", "websocket": "/ws/incidents/..."}
+
+# Watch it live
+websocat ws://localhost:8000/ws/incidents/<incident_id>
+# {"type":"agent.completed","agent":"database_investigator","progress":0.6,...}
+# {"type":"investigation.completed","message":"root cause: ...","progress":1.0,...}
+
+# Read the results
+curl localhost:8000/api/v1/incidents/<incident_id>/investigation
+curl localhost:8000/api/v1/incidents/<incident_id>/graph
+curl localhost:8000/metrics
+```
+
+By default the LLM provider is `scripted` (canned demo completions, fully offline). For real
+investigations: `AEGIS_LLM_PROVIDER=anthropic` plus `ANTHROPIC_API_KEY`.
+
+## Technical highlights
+
+- **Structured concurrency end to end** — every concurrent phase is an `asyncio.TaskGroup`;
+  bounded channels give the pipeline backpressure by construction; sources are async
+  generators with deterministic `aclose` on every exit path, including cancellation.
+- **An honest CPU/IO split** — exactly one workload crosses the process boundary: batched
+  regex parsing + template extraction, which is genuinely GIL-bound. Pure picklable
+  functions, executor injected by the composition root. ~15k events/s at 200k-event scale
+  on a 4-worker Windows laptop (`scripts/benchmark_ingest.py`; 1M events in ~2 minutes).
+- **Correlation that admits what it is** — five weighted strategies (temporal decay,
+  trace linkage, directional service dependencies, template similarity, error-propagation
+  cascades) produce *evidence-weighted plausibility*, not causal inference — and every edge
+  carries its per-strategy score breakdown so claims are auditable.
+- **Graph algorithms that earn their place** — retry storms are real cycles, so topological
+  reasoning happens on the SCC condensation; root candidates rank by blast radius ×
+  earliness × impact; the failure chain is Dijkstra over −log(edge score); the timeline
+  survives clock skew between hosts.
+- **AI with guardrails, not vibes** — a generic `Agent[TInput, TFinding]` ABC owns the tool
+  loop: per-agent tool budgets, per-call timeouts, max turns, and JSON output validated by
+  Pydantic with exactly one correction attempt. Pydantic argument models double as the tool
+  schema shown to the model — one source of truth. Every tool execution lands in an audit
+  trail; token usage is metered per turn. The Devil's Advocate exists to attack the leading
+  hypothesis, and the Commander must report surviving contradicting evidence.
+- **Provider seam** — agents depend on an `LLMProvider` protocol; the Anthropic adapter is
+  one thin module. Resilience is composed around any provider: semaphore concurrency cap,
+  transient-only retries with full-jitter backoff and a shared retry budget (a tool that
+  diagnoses retry storms must not cause them). Tests replay scripted completions — the suite
+  never touches a paid API.
+- **Persistence designed for its scale claims** — COPY-based bulk insert through raw
+  asyncpg, BRIN on timestamp, composite and partial indexes, templates normalized out of
+  the event rows, HNSW/cosine for incident memory. Range partitioning is documented as the
+  ~50–100M row step, deliberately not built speculatively.
+- **Incident memory with an honest scope** — new-incident summaries are embedded (Voyage AI,
+  or a deterministic hashing embedder offline) and the top-k similar historical incidents
+  become provenance-carrying evidence for the investigators. Nothing else here is called RAG.
+- **Observable investigator** — structlog JSON logs with contextvars-propagated
+  request/incident/investigation IDs; Prometheus metrics for ingestion, detection,
+  correlation, investigations, tool calls, and tokens.
+
+### Why not Celery?
+
+The stack is asyncio-native end to end (async SQLAlchemy, httpx, async SDKs). Celery has no
+first-class async task support, so adopting it would mean either an event loop per task
+invocation or a second, synchronous database stack living alongside the async one. When
+distributed workers land (see roadmap), the plan is **arq** — Redis-backed and
+asyncio-native — keeping one coherent concurrency model. The tradeoff is documented here
+precisely because "we picked the famous tool" is not an architecture decision.
 
 ## Development
 
 ```bash
-uv sync                 # install with dev dependencies
-uv run pytest           # tests
-uv run ruff check .     # lint
-uv run mypy             # strict type checking
+uv sync
+uv run pytest -q            # 156 unit + e2e tests, no infrastructure needed
+uv run mypy                 # strict
+uv run ruff check .
+uv run pytest -m integration  # needs AEGIS_TEST_DATABASE_URL (CI runs these
+                              # against real PostgreSQL + pgvector)
 ```
 
-Requires Python 3.13 (uv will fetch it automatically).
+The end-to-end test runs the entire deterministic pipeline on a seeded five-service
+synthetic incident (four real log formats) and asserts the trigger region wins root ranking
+and the causal chain passes through the pool exhaustion — no mocks. The investigation layer
+is tested through scripted providers: budgets, timeouts, validation retries, and the full
+orchestration are all exercised deterministically.
 
-## Roadmap (MVP vertical slice)
+## Implemented vs. roadmap
 
-Ingestion sources → process-pool parsing/normalization → statistical anomaly detection →
-correlation strategies → causal evidence graph → concurrent AI investigators with typed tool
-calling → validated `RootCauseAssessment` → FastAPI + WebSocket progress stream → PostgreSQL
-(+pgvector) persistence and incident memory.
+**Implemented** (everything described above): ingestion (file / NDJSON / Docker json-file
+replay), process-pool parsing, four anomaly detectors, five correlation strategies, the
+causal graph, four AI investigators with seven tools, pgvector incident memory, PostgreSQL
+persistence with Alembic, FastAPI + WebSocket, Prometheus metrics, structured logging,
+Docker Compose, CI with real-database integration tests.
+
+**Roadmap** (designed for, intentionally not shipped yet):
+
+- Distributed workers (arq) for embedding generation and incident indexing; Redis pub/sub
+  replacing the in-process event bus for multi-process deployments.
+- Read-only source-code inspection (path-traversal-guarded repository access) and the Code
+  Investigator agent; patch proposals as unified diffs — never auto-applied.
+- Live ingestion transports: Docker daemon API, syslog, Kafka, HTTP streaming.
+- `log_events` range partitioning + retention jobs (documented threshold: ~50–100M rows).
+- OpenTelemetry traces on the architecture's existing ID propagation.
+- Latency-distribution and pool-threshold anomaly detectors; Network Investigator.

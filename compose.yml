@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: aegis
+      POSTGRES_PASSWORD: aegis
+      POSTGRES_DB: aegis
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aegis"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Reserved for the distributed-worker milestone (arq). Kept in the stack so
+  # the API's future queue configuration points somewhere real.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  migrate:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      AEGIS_DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      AEGIS_DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
+      # scripted = fully offline demo; set to "anthropic" + ANTHROPIC_API_KEY
+      # for real investigations.
+      AEGIS_LLM_PROVIDER: scripted
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
