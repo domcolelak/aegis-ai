@@ -68,6 +68,14 @@ root causes and propose remediation.
   cause + remediation) become provenance-carrying evidence for the investigators. Embeddings
   via an `EmbeddingProvider` protocol: Voyage AI in production, a deterministic
   token-hashing embedder for tests and offline demos (same 1024 dimensions, drop-in).
+- **API + WebSocket** (`aegis.api`) — FastAPI surface with `create_app` as the explicit
+  composition root (no DI framework, no globals): `POST /api/v1/incidents/analyze` pre-creates
+  the incident and runs the whole slice as a tracked background task; read endpoints for
+  incidents, the causal graph, and the investigation; source registration; and
+  `/ws/incidents/{id}` streaming typed progress events. The in-process topic bus hides behind
+  publish/subscribe seams (Redis pub/sub can replace it) and drops oldest events for slow
+  consumers instead of blocking the pipeline. With the default `scripted` LLM provider the
+  entire system runs offline — no API key needed for the demo.
 - **Synthetic incident** (`aegis.synthetic`) — a seeded, deterministic five-service incident
   (traffic spike → Stripe latency → session leak → pool exhaustion → retry storm → outage)
   in four real log formats, driving the end-to-end test: the pipeline ranks the trigger

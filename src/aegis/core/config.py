@@ -22,3 +22,11 @@ class Settings(BaseSettings):
     embedding_provider: Literal["hashing", "voyage"] = "hashing"
     voyage_api_key: str | None = None
     voyage_model: str = "voyage-3.5-lite"
+
+    # "scripted" replays canned demo completions so the whole system runs
+    # offline out of the box; set "anthropic" (plus ANTHROPIC_API_KEY) for
+    # real investigations.
+    llm_provider: Literal["anthropic", "scripted"] = "scripted"
+    anthropic_model: str = "claude-sonnet-5"
+    llm_max_concurrent: int = 4
+    parser_workers: int = 2
