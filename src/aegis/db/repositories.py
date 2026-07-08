@@ -14,6 +14,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from aegis.db.models import (
     AgentFindingRecord,
@@ -34,7 +35,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     import asyncpg
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
     from aegis.correlation import CausalEdge
     from aegis.detection import AnomalyCluster
@@ -60,6 +61,9 @@ _COPY_COLUMNS = (
 class EventRepository:
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
+        # Reads are ORM queries and need a session; the engine itself is kept
+        # for the COPY fast path, which is driver-level by design.
+        self._sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def bulk_insert(self, events: Sequence[LogEvent]) -> int:
         """Signature upsert + COPY of the events, in one transaction."""
@@ -103,8 +107,8 @@ class EventRepository:
         return len(events)
 
     async def count(self) -> int:
-        async with self._engine.connect() as conn:
-            result = await conn.execute(select(func.count()).select_from(LogEventRecord))
+        async with self._sessions() as session:
+            result = await session.execute(select(func.count()).select_from(LogEventRecord))
             return int(result.scalar_one())
 
     async def fetch_window(
@@ -132,8 +136,8 @@ class EventRepository:
         )
         if service is not None:
             stmt = stmt.where(LogEventRecord.service == service)
-        async with self._engine.connect() as conn:
-            rows = (await conn.execute(stmt)).all()
+        async with self._sessions() as session:
+            rows = (await session.execute(stmt)).all()
         return [_to_domain(row.LogEventRecord, row.template) for row in rows]
 
 
@@ -178,6 +182,10 @@ class IncidentRepository:
             incident.incident_id = incident_id
         async with self._sessions.begin() as session:
             session.add(incident)
+            # Flush the parent row first: without ORM relationships the unit
+            # of work does not order inserts across mappers, and the children
+            # reference it by foreign key.
+            await session.flush()
             self._add_analysis(session, incident.incident_id, clusters, edges)
         return incident.incident_id
 
@@ -274,6 +282,9 @@ class InvestigationRepository:
                     challenge=result.challenge.model_dump(mode="json"),
                 )
             )
+            # Parent row must hit the database before the FK-dependent
+            # findings/tool rows; see IncidentRepository.create.
+            await session.flush()
             session.add_all(
                 AgentFindingRecord(
                     investigation_id=result.investigation_id,
