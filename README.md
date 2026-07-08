@@ -5,19 +5,9 @@ volumes of distributed system logs, normalizes and correlates events, constructs
 causal evidence graph, and orchestrates specialized AI investigators that determine the
 probable root cause — validated, audited, and streamed live over WebSocket.
 
-```text
-ROOT CAUSE PROBABILITY: 82.0%
-Database sessions leak in booking-api's payment-timeout path; under Stripe
-latency and elevated traffic the connection pool and PostgreSQL slots
-exhaust, cascading into a retry storm and user-visible outage.
-
-FAILURE CHAIN:
-  payments     stripe requests slow down and time out
-  booking-api  timeout path leaks sessions; QueuePool exhausts
-  postgres     connection slots run out (FATAL)
-  worker-1     retry storm amplifies the failure
-  nginx        upstream timeouts: user-visible outage
-```
+<p align="center">
+  <img src="docs/demo.svg" alt="Terminal recording of scripts/demo.py: the pipeline parses 781 events across 5 services, detects anomaly clusters, builds a 227-node causal graph, runs four AI investigators, and reports the root cause (database session leak, 82% confidence) with the full failure chain." width="780">
+</p>
 
 That output is real: `uv run python scripts/demo.py` produces it in about a second, offline,
 with no API key and no database.
