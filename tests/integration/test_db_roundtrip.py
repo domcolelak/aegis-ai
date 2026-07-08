@@ -200,7 +200,14 @@ async def test_pgvector_similarity_orders_incidents(db: Db) -> None:
         assessment("DNS delegation expired", "expired DNS zone", "mesh-gateway"),
     )
 
-    matches = await memory.recall("connection pool exhaustion after payment timeouts", limit=2)
+    # The hashing embedder matches on shared vocabulary (no stemming), so the
+    # query reuses the stored incident's wording the way a real new incident
+    # summary would.
+    matches = await memory.recall(
+        "stripe timeout under traffic spike: database session leak exhausted "
+        "the connection pool in booking-api",
+        limit=2,
+    )
 
     assert matches, "pgvector must return the vocabulary-overlapping incident"
     assert matches[0].incident_id == pool_incident
