@@ -14,3 +14,11 @@ class Settings(BaseSettings):
 
     environment: Literal["dev", "test", "prod"] = "dev"
     log_level: str = "INFO"
+
+    database_url: str = "postgresql+asyncpg://aegis:aegis@localhost:5432/aegis"
+
+    # "hashing" is the deterministic offline default; set "voyage" plus the
+    # API key for real semantic embeddings.
+    embedding_provider: Literal["hashing", "voyage"] = "hashing"
+    voyage_api_key: str | None = None
+    voyage_model: str = "voyage-3.5-lite"

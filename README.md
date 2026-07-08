@@ -57,6 +57,17 @@ root causes and propose remediation.
     the Devil's Advocate attacks their findings, and the tool-less Incident Commander
     synthesizes a validated `RootCauseAssessment`;
   - typed progress events published at every phase for the upcoming WebSocket stream.
+- **Persistence** (`aegis.db`) — async SQLAlchemy 2.x over PostgreSQL, hand-reviewed Alembic
+  migration verified in CI against real PostgreSQL+pgvector. Scale posture for `log_events`:
+  BRIN on timestamp, composite `(service, timestamp)` B-tree, partial trace-id index,
+  templates normalized into `event_signatures`, and COPY-based bulk insert through the raw
+  asyncpg connection. Range partitioning is documented as the ~50–100M row step, not built
+  speculatively.
+- **Incident memory** (`aegis.memory`) — pgvector retrieval with an honest scope statement:
+  new-incident summaries are embedded and the top-k similar *historical incidents* (root
+  cause + remediation) become provenance-carrying evidence for the investigators. Embeddings
+  via an `EmbeddingProvider` protocol: Voyage AI in production, a deterministic
+  token-hashing embedder for tests and offline demos (same 1024 dimensions, drop-in).
 - **Synthetic incident** (`aegis.synthetic`) — a seeded, deterministic five-service incident
   (traffic spike → Stripe latency → session leak → pool exhaustion → retry storm → outage)
   in four real log formats, driving the end-to-end test: the pipeline ranks the trigger
