@@ -13,10 +13,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import tempfile
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 from uuid import UUID, uuid4
+
+import structlog
 
 from aegis.api.bus import TopicPublisher
 from aegis.core.channel import Channel
@@ -28,8 +31,11 @@ from aegis.ingestion import IngestionSupervisor
 from aegis.investigation import build_evidence
 from aegis.investigation.data import InvestigationDataStore
 from aegis.investigation.progress import ProgressEvent, ProgressKind
+from aegis.observability import Metrics, NullMetrics
 from aegis.parsing import ParsingStage
 from aegis.synthetic import generate, materialize
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from concurrent.futures import Executor
@@ -63,6 +69,7 @@ class IncidentAnalysisService:
         orchestrator_factory: OrchestratorFactory,
         bus: InProcessEventBus,
         executor: Executor,
+        metrics: Metrics | None = None,
     ) -> None:
         self._events = events
         self._incidents = incidents
@@ -71,6 +78,7 @@ class IncidentAnalysisService:
         self._orchestrator_factory = orchestrator_factory
         self._bus = bus
         self._executor = executor
+        self._metrics = metrics or NullMetrics()
         self._running: set[asyncio.Task[None]] = set()
 
     async def start_analysis(self, request: AnalyzeRequest) -> tuple[UUID, UUID]:
@@ -99,14 +107,24 @@ class IncidentAnalysisService:
         self, incident_id: UUID, investigation_id: UUID, request: AnalyzeRequest
     ) -> None:
         publisher = TopicPublisher(self._bus, incident_id)
+        structlog.contextvars.bind_contextvars(
+            incident_id=str(incident_id), investigation_id=str(investigation_id)
+        )
+        started = time.perf_counter()
+        self._metrics.set_gauge("active_investigations", float(len(self._running)))
         try:
             events = await self._ingest_and_parse(request)
             await self._events.bulk_insert(events)
+            self._metrics.inc("logs_parsed_total", len(events))
+            logger.info("events_persisted", count=len(events))
 
             detector = default_engine()
             for event in events:
                 detector.observe(event)
             clusters = detector.flush(now=events[-1].timestamp + timedelta(minutes=1))
+            for cluster in clusters:
+                self._metrics.inc("anomaly_clusters_total", kind=cluster.kind.value)
+            logger.info("anomalies_detected", clusters=len(clusters))
 
             boost = {
                 event_id: cluster.confidence
@@ -123,7 +141,9 @@ class IncidentAnalysisService:
                 dependency_map=dependency_map, similarity=TokenJaccardSimilarity()
             )
             edges = CorrelationEngine().correlate(interesting, ctx)
+            self._metrics.inc("correlation_edges_created_total", len(edges))
             graph = IncidentGraph(interesting, edges).prune(min_score=0.35)
+            logger.info("graph_built", candidates=len(interesting), edges=graph.edge_count)
 
             window = TimeWindow(start=events[0].timestamp, end=events[-1].timestamp)
             await self._incidents.attach_analysis(
@@ -152,7 +172,27 @@ class IncidentAnalysisService:
             await self._investigations.persist(incident_id, result)
             await self._memory.remember(incident_id, result.assessment)
             await self._incidents.set_status(incident_id, "completed")
+
+            for execution in result.tool_executions:
+                self._metrics.inc(
+                    "agent_tool_calls_total",
+                    agent=execution.agent,
+                    tool=execution.tool,
+                    outcome=execution.outcome,
+                )
+            self._metrics.inc("ai_tokens_used_total", result.usage.input_tokens, direction="input")
+            self._metrics.inc(
+                "ai_tokens_used_total", result.usage.output_tokens, direction="output"
+            )
+            self._metrics.inc("investigations_total", status="completed")
+            logger.info(
+                "investigation_completed",
+                root_cause=result.assessment.root_cause,
+                confidence=result.assessment.confidence,
+            )
         except Exception:
+            self._metrics.inc("investigations_total", status="failed")
+            logger.exception("analysis_failed")
             await self._incidents.set_status(incident_id, "failed")
             await publisher.publish(
                 ProgressEvent(
@@ -163,6 +203,10 @@ class IncidentAnalysisService:
                 )
             )
             raise
+        finally:
+            self._metrics.observe("investigation_duration_seconds", time.perf_counter() - started)
+            self._metrics.set_gauge("active_investigations", float(max(len(self._running) - 1, 0)))
+            structlog.contextvars.unbind_contextvars("incident_id", "investigation_id")
 
     async def _ingest_and_parse(self, request: AnalyzeRequest) -> list[LogEvent]:
         incident = generate(seed=request.seed)
@@ -177,9 +221,11 @@ class IncidentAnalysisService:
                 return [event async for event in parsed]
 
             async with asyncio.TaskGroup() as tg:
-                tg.create_task(supervisor.run())
+                ingest = tg.create_task(supervisor.run())
                 tg.create_task(stage.run(raw, parsed))
                 collector = tg.create_task(collect())
+        for source_id, count in ingest.result().items():
+            self._metrics.inc("logs_ingested_total", count, source=source_id)
         return sorted(collector.result(), key=lambda event: event.timestamp)
 
 

@@ -78,6 +78,25 @@ def make_ctx(fixture: IncidentFixture) -> InvestigationContext:
 
 
 class TestAgentLoop:
+    async def test_token_usage_is_metered_across_turns(
+        self, small_incident: IncidentFixture
+    ) -> None:
+        import dataclasses
+
+        from aegis.investigation.providers.base import TokenUsage
+
+        with_usage = dataclasses.replace(
+            json_completion(finding_payload("metered")),
+            usage=TokenUsage(input_tokens=120, output_tokens=45),
+        )
+        provider = ScriptedProvider({"log_analyst": [with_usage]})
+        agent = LogAnalyst(provider, ToolRegistry(default_tools()))
+        ctx = make_ctx(small_incident)
+
+        await agent.investigate(ctx, small_incident.evidence)
+
+        assert ctx.usage.total() == TokenUsage(input_tokens=120, output_tokens=45)
+
     async def test_agent_calls_tools_then_returns_validated_finding(
         self, small_incident: IncidentFixture
     ) -> None:

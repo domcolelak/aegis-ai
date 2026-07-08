@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     environment: Literal["dev", "test", "prod"] = "dev"
     log_level: str = "INFO"
+    json_logs: bool = True
 
     database_url: str = "postgresql+asyncpg://aegis:aegis@localhost:5432/aegis"
 

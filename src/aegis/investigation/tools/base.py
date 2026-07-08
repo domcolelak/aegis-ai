@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
-from aegis.investigation.providers.base import ToolSpec
+from aegis.investigation.providers.base import TokenUsage, ToolSpec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -50,12 +50,30 @@ class InvestigationAudit:
         return tuple(self._entries)
 
 
+class UsageMeter:
+    """Accumulates LLM token usage across every agent of one investigation."""
+
+    __slots__ = ("input_tokens", "output_tokens")
+
+    def __init__(self) -> None:
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def add(self, usage: TokenUsage) -> None:
+        self.input_tokens += usage.input_tokens
+        self.output_tokens += usage.output_tokens
+
+    def total(self) -> TokenUsage:
+        return TokenUsage(input_tokens=self.input_tokens, output_tokens=self.output_tokens)
+
+
 @dataclass(slots=True, frozen=True)
 class InvestigationContext:
     investigation_id: UUID
     data: InvestigationDataStore
     audit: InvestigationAudit
     tool_timeout_s: float = 10.0
+    usage: UsageMeter = field(default_factory=UsageMeter)
 
 
 class Tool[TArgs: BaseModel](ABC):

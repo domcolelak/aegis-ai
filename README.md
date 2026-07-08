@@ -76,6 +76,13 @@ root causes and propose remediation.
   publish/subscribe seams (Redis pub/sub can replace it) and drops oldest events for slow
   consumers instead of blocking the pipeline. With the default `scripted` LLM provider the
   entire system runs offline — no API key needed for the demo.
+- **Observability** (`aegis.observability`) — a system that investigates incidents must not be
+  a black box itself: structured JSON logs (structlog) with contextvars-propagated
+  request/incident/investigation IDs on every line; a `Metrics` protocol with a Prometheus
+  implementation (`/metrics`) covering `logs_ingested_total`, `anomaly_clusters_total`,
+  `correlation_edges_created_total`, `investigation_duration_seconds`,
+  `agent_tool_calls_total`, `ai_tokens_used_total`, `active_investigations`, and
+  per-route HTTP counters; token usage metered across every agent turn.
 - **Synthetic incident** (`aegis.synthetic`) — a seeded, deterministic five-service incident
   (traffic spike → Stripe latency → session leak → pool exhaustion → retry storm → outage)
   in four real log formats, driving the end-to-end test: the pipeline ranks the trigger
