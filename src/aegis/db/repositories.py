@@ -24,6 +24,7 @@ from aegis.db.models import (
     IncidentRecord,
     InvestigationRecord,
     LogEventRecord,
+    LogSourceRecord,
     ToolExecutionRecord,
 )
 from aegis.events import EventKind, EventSignature, LogEvent, Severity
@@ -164,39 +165,75 @@ class IncidentRepository:
         self,
         window: TimeWindow,
         *,
+        incident_id: UUID | None = None,
         clusters: Sequence[AnomalyCluster] = (),
         edges: Sequence[CausalEdge] = (),
         summary: str | None = None,
+        status: str = "detected",
     ) -> UUID:
-        incident = IncidentRecord(window_start=window.start, window_end=window.end, summary=summary)
+        incident = IncidentRecord(
+            window_start=window.start, window_end=window.end, summary=summary, status=status
+        )
+        if incident_id is not None:
+            incident.incident_id = incident_id
         async with self._sessions.begin() as session:
             session.add(incident)
-            session.add_all(
-                AnomalyClusterRecord(
-                    cluster_id=cluster.cluster_id,
-                    incident_id=incident.incident_id,
-                    kind=cluster.kind.value,
-                    service=cluster.service,
-                    window_start=cluster.window.start,
-                    window_end=cluster.window.end,
-                    event_count=cluster.event_count,
-                    confidence=cluster.confidence,
-                    attributes=dict(cluster.attributes),
-                    representative_events=[str(rid) for rid in cluster.representative_events],
-                )
-                for cluster in clusters
-            )
-            session.add_all(
-                CausalEdgeRecord(
-                    incident_id=incident.incident_id,
-                    source_event=edge.source_event,
-                    target_event=edge.target_event,
-                    composite_score=edge.composite_score,
-                    strategy_scores=dict(edge.strategy_scores),
-                )
-                for edge in edges
-            )
+            self._add_analysis(session, incident.incident_id, clusters, edges)
         return incident.incident_id
+
+    async def attach_analysis(
+        self,
+        incident_id: UUID,
+        window: TimeWindow,
+        *,
+        clusters: Sequence[AnomalyCluster] = (),
+        edges: Sequence[CausalEdge] = (),
+        summary: str | None = None,
+    ) -> None:
+        """Fill in results once the pipeline has run; the incident row is
+        pre-created so clients can attach to its progress stream first."""
+        async with self._sessions.begin() as session:
+            incident = await session.get(IncidentRecord, incident_id)
+            if incident is None:
+                raise KeyError(f"incident {incident_id} not found")
+            incident.window_start = window.start
+            incident.window_end = window.end
+            if summary is not None:
+                incident.summary = summary
+            self._add_analysis(session, incident_id, clusters, edges)
+
+    @staticmethod
+    def _add_analysis(
+        session: AsyncSession,
+        incident_id: UUID,
+        clusters: Sequence[AnomalyCluster],
+        edges: Sequence[CausalEdge],
+    ) -> None:
+        session.add_all(
+            AnomalyClusterRecord(
+                cluster_id=cluster.cluster_id,
+                incident_id=incident_id,
+                kind=cluster.kind.value,
+                service=cluster.service,
+                window_start=cluster.window.start,
+                window_end=cluster.window.end,
+                event_count=cluster.event_count,
+                confidence=cluster.confidence,
+                attributes=dict(cluster.attributes),
+                representative_events=[str(rid) for rid in cluster.representative_events],
+            )
+            for cluster in clusters
+        )
+        session.add_all(
+            CausalEdgeRecord(
+                incident_id=incident_id,
+                source_event=edge.source_event,
+                target_event=edge.target_event,
+                composite_score=edge.composite_score,
+                strategy_scores=dict(edge.strategy_scores),
+            )
+            for edge in edges
+        )
 
     async def get(self, incident_id: UUID) -> IncidentRecord | None:
         async with self._sessions() as session:
@@ -272,6 +309,31 @@ class InvestigationRepository:
                 .limit(1)
             )
             return (await session.execute(stmt)).scalars().first()
+
+    async def findings_for(self, investigation_id: UUID) -> list[AgentFindingRecord]:
+        async with self._sessions() as session:
+            stmt = select(AgentFindingRecord).where(
+                AgentFindingRecord.investigation_id == investigation_id
+            )
+            return list((await session.execute(stmt)).scalars())
+
+
+class SourceRepository:
+    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+        self._sessions = sessions
+
+    async def register(self, source_id: str, log_format: str) -> None:
+        async with self._sessions.begin() as session:
+            await session.execute(
+                pg_insert(LogSourceRecord)
+                .values(source_id=source_id, log_format=log_format)
+                .on_conflict_do_nothing(index_elements=["source_id"])
+            )
+
+    async def list_all(self) -> list[LogSourceRecord]:
+        async with self._sessions() as session:
+            stmt = select(LogSourceRecord).order_by(LogSourceRecord.created_at)
+            return list((await session.execute(stmt)).scalars())
 
 
 class MemoryRepository:

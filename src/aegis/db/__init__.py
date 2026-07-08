@@ -16,6 +16,7 @@ from aegis.db.repositories import (
     IncidentRepository,
     InvestigationRepository,
     MemoryRepository,
+    SourceRepository,
 )
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "IncidentRepository",
     "InvestigationRepository",
     "MemoryRepository",
+    "SourceRepository",
     "create_db_engine",
     "create_session_factory",
 ]
