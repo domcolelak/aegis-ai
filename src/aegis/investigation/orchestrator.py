@@ -10,7 +10,7 @@ published at every phase boundary for the WebSocket stream.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from aegis.investigation.briefs import AdvocateBrief, CommanderBrief
 from aegis.investigation.progress import NullPublisher, ProgressEvent, ProgressKind
+from aegis.investigation.providers.base import TokenUsage
 from aegis.investigation.tools.base import InvestigationAudit, InvestigationContext
 
 if TYPE_CHECKING:
@@ -45,6 +46,7 @@ class InvestigationResult:
     tool_executions: tuple[ToolExecution, ...]
     started_at: datetime
     completed_at: datetime
+    usage: TokenUsage = field(default_factory=TokenUsage)
 
 
 class InvestigationOrchestrator:
@@ -122,6 +124,7 @@ class InvestigationOrchestrator:
             tool_executions=ctx.audit.entries,
             started_at=started_at,
             completed_at=datetime.now(tz=UTC),
+            usage=ctx.usage.total(),
         )
 
     async def _run_specialists(

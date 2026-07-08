@@ -14,8 +14,10 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
-from fastapi import FastAPI
+import structlog
+from fastapi import FastAPI, Request, Response
 
 from aegis.api.bus import InProcessEventBus
 from aegis.api.routes import incident_progress_ws, router
@@ -40,14 +42,17 @@ from aegis.investigation.providers import RateLimitedProvider, RetryingProvider,
 from aegis.investigation.providers.demo import demo_scripts
 from aegis.investigation.tools import ToolRegistry, default_tools
 from aegis.memory import HashingEmbedder, IncidentMemory, VoyageEmbedder
+from aegis.observability import PrometheusMetrics, configure_logging
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from aegis.api.service import AnalysisService
     from aegis.investigation.progress import ProgressPublisher
     from aegis.investigation.providers.base import LLMProvider
     from aegis.memory.embeddings import EmbeddingProvider
+
+type RequestHandler = Callable[[Request], Awaitable[Response]]
 
 
 def _build_provider(settings: Settings) -> LLMProvider:
@@ -77,6 +82,8 @@ def create_app(
 ) -> FastAPI:
     settings = settings or Settings()
     bus = bus or InProcessEventBus()
+    configure_logging(level=settings.log_level, json_logs=settings.json_logs)
+    metrics = PrometheusMetrics()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -116,6 +123,7 @@ def create_app(
             orchestrator_factory=orchestrator_factory,
             bus=bus,
             executor=executor,
+            metrics=metrics,
         )
         app.state.analysis_service = service
         try:
@@ -132,11 +140,34 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.bus = bus
+    app.state.metrics = metrics
     app.include_router(router)
     app.add_api_websocket_route("/ws/incidents/{incident_id}", incident_progress_ws)
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next: RequestHandler) -> Response:
+        request_id = request.headers.get("x-request-id") or uuid4().hex[:16]
+        structlog.contextvars.bind_contextvars(request_id=request_id)
+        try:
+            response = await call_next(request)
+        finally:
+            structlog.contextvars.unbind_contextvars("request_id")
+        response.headers["x-request-id"] = request_id
+        route = request.scope.get("route")
+        metrics.inc(
+            "http_requests_total",
+            method=request.method,
+            route=getattr(route, "path", request.url.path),
+            status=str(response.status_code),
+        )
+        return response
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        return Response(content=metrics.render(), media_type="text/plain; version=0.0.4")
 
     return app

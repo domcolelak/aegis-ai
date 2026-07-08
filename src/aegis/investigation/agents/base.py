@@ -97,6 +97,7 @@ class Agent[TInput, TFinding: BaseModel](ABC):
                     max_tokens=self._max_tokens,
                 )
             )
+            ctx.usage.add(completion.usage)
             tool_uses = [block for block in completion.content if isinstance(block, ToolUseBlock)]
             if tool_uses:
                 messages.append(Message(role="assistant", content=completion.content))

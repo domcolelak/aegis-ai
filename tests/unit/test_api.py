@@ -109,3 +109,15 @@ def test_healthz() -> None:
     client, _ = make_client()
     with client:
         assert client.get("/healthz").json() == {"status": "ok"}
+
+
+def test_request_id_is_issued_or_echoed_and_requests_are_counted() -> None:
+    client, _ = make_client()
+    with client:
+        fresh = client.get("/healthz")
+        echoed = client.get("/healthz", headers={"x-request-id": "req-abc"})
+        metrics = client.get("/metrics").text
+
+    assert fresh.headers["x-request-id"]
+    assert echoed.headers["x-request-id"] == "req-abc"
+    assert 'http_requests_total{method="GET",route="/healthz",status="200"}' in metrics
