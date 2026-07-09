@@ -6,5 +6,6 @@ Everything is seeded -- the same seed always produces byte-identical logs.
 """
 
 from aegis.synthetic.incident import SyntheticIncident, generate, materialize
+from aegis.synthetic.repo import materialize_repo
 
-__all__ = ["SyntheticIncident", "generate", "materialize"]
+__all__ = ["SyntheticIncident", "generate", "materialize", "materialize_repo"]

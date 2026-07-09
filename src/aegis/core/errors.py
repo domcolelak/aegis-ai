@@ -42,6 +42,10 @@ class ProviderUnavailableError(ProviderError):
     """Transient provider failure (5xx, connection, timeout); retryable."""
 
 
+class RepositoryAccessError(AegisError):
+    """Source-repository access denied or misconfigured (path escape, size cap)."""
+
+
 class RetryExhaustedError(AegisError):
     """All retry attempts failed; the last failure is chained as __cause__."""
 

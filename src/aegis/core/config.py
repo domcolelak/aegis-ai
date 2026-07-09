@@ -31,3 +31,7 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-5"
     llm_max_concurrent: int = 4
     parser_workers: int = 2
+
+    # Read-only source inspection root; enables the Code Investigator and
+    # Patch Engineer when set.
+    repository_root: str | None = None

@@ -261,6 +261,64 @@ class TestOrchestrator:
         assert publisher.events[-1].kind is ProgressKind.INVESTIGATION_FAILED
 
 
+class TestCodeInvestigationAndPatch:
+    async def test_full_run_with_code_investigator_and_patch_engineer(
+        self, small_incident: IncidentFixture, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+
+        from aegis.inspection import RepositoryInspector
+        from aegis.investigation.agents import CodeInvestigator, PatchEngineer
+        from aegis.investigation.providers.demo import demo_scripts
+        from aegis.investigation.tools import code_tools
+        from aegis.synthetic import materialize_repo
+
+        provider = ScriptedProvider(demo_scripts())
+        registry = ToolRegistry([*default_tools(), *code_tools()])
+        repository = RepositoryInspector(materialize_repo(Path(str(tmp_path))))
+        publisher = CollectingPublisher()
+        orchestrator = InvestigationOrchestrator(
+            specialists=[
+                LogAnalyst(provider, registry),
+                DatabaseInvestigator(provider, registry),
+                CodeInvestigator(provider, registry),
+            ],
+            advocate=DevilsAdvocate(provider, registry),
+            commander=IncidentCommander(provider, registry),
+            publisher=publisher,
+            patch_engineer=PatchEngineer(provider, registry),
+            repository=repository,
+        )
+
+        result = await orchestrator.investigate(small_incident.dataset, small_incident.evidence)
+
+        assert result.patch is not None
+        assert result.patch.affected_files == ["app/services/booking_service.py"]
+        assert "async with SessionLocal()" in result.patch.diff
+        # The code tools really executed against the jailed repository.
+        code_calls = [e for e in result.tool_executions if e.agent == "code_investigator"]
+        assert [e.outcome for e in code_calls] == ["ok", "ok"]
+        progresses = [event.progress for event in publisher.events]
+        assert progresses == sorted(progresses)
+        assert progresses[-1] == 1.0
+
+    def test_patch_engineer_without_repository_is_a_config_error(
+        self, small_incident: IncidentFixture
+    ) -> None:
+        from aegis.investigation.agents import PatchEngineer
+
+        provider = ScriptedProvider({})
+        registry = ToolRegistry(default_tools())
+
+        with pytest.raises(ValueError, match="requires a configured repository"):
+            InvestigationOrchestrator(
+                specialists=[LogAnalyst(provider, registry)],
+                advocate=DevilsAdvocate(provider, registry),
+                commander=IncidentCommander(provider, registry),
+                patch_engineer=PatchEngineer(provider, registry),
+            )
+
+
 class TestProviderDecorators:
     async def test_rate_limited_provider_caps_concurrency(self) -> None:
         in_flight = 0

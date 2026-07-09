@@ -177,6 +177,21 @@ class ToolExecutionRecord(Base):
     at: Mapped[datetime]
 
 
+class GeneratedPatchRecord(Base):
+    __tablename__ = "generated_patches"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    investigation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("investigations.investigation_id"), index=True
+    )
+    reasoning: Mapped[str] = mapped_column(Text)
+    diff: Mapped[str] = mapped_column(Text)
+    affected_files: Mapped[list[str]] = mapped_column(JSONB)
+    confidence: Mapped[float]
+    risks: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class IncidentMemoryRecord(Base):
     __tablename__ = "incident_memory"
 

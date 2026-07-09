@@ -21,6 +21,7 @@ from aegis.db.models import (
     AnomalyClusterRecord,
     CausalEdgeRecord,
     EventSignatureRecord,
+    GeneratedPatchRecord,
     IncidentMemoryRecord,
     IncidentRecord,
     InvestigationRecord,
@@ -306,6 +307,17 @@ class InvestigationRepository:
                 )
                 for execution in result.tool_executions
             )
+            if result.patch is not None:
+                session.add(
+                    GeneratedPatchRecord(
+                        investigation_id=result.investigation_id,
+                        reasoning=result.patch.reasoning,
+                        diff=result.patch.diff,
+                        affected_files=list(result.patch.affected_files),
+                        confidence=result.patch.confidence,
+                        risks=list(result.patch.risks),
+                    )
+                )
 
     async def get(self, investigation_id: UUID) -> InvestigationRecord | None:
         async with self._sessions() as session:
@@ -327,6 +339,16 @@ class InvestigationRepository:
                 AgentFindingRecord.investigation_id == investigation_id
             )
             return list((await session.execute(stmt)).scalars())
+
+    async def patch_for(self, investigation_id: UUID) -> GeneratedPatchRecord | None:
+        async with self._sessions() as session:
+            stmt = (
+                select(GeneratedPatchRecord)
+                .where(GeneratedPatchRecord.investigation_id == investigation_id)
+                .order_by(GeneratedPatchRecord.created_at.desc())
+                .limit(1)
+            )
+            return (await session.execute(stmt)).scalars().first()
 
 
 class SourceRepository:

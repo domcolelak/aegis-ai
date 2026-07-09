@@ -17,7 +17,8 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 
-from aegis.investigation.briefs import AdvocateBrief, CommanderBrief
+from aegis.investigation.briefs import AdvocateBrief, CommanderBrief, PatchBrief
+from aegis.investigation.patching import validate_patch
 from aegis.investigation.progress import NullPublisher, ProgressEvent, ProgressKind
 from aegis.investigation.providers.base import TokenUsage
 from aegis.investigation.tools.base import InvestigationAudit, InvestigationContext
@@ -25,9 +26,11 @@ from aegis.investigation.tools.base import InvestigationAudit, InvestigationCont
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
+    from aegis.inspection import RepositoryInspector
     from aegis.investigation.agents.base import Agent
     from aegis.investigation.assessment import (
         AdvocateChallenge,
+        PatchProposal,
         RootCauseAssessment,
         SpecialistFinding,
     )
@@ -47,6 +50,7 @@ class InvestigationResult:
     started_at: datetime
     completed_at: datetime
     usage: TokenUsage = field(default_factory=TokenUsage)
+    patch: PatchProposal | None = None
 
 
 class InvestigationOrchestrator:
@@ -58,14 +62,20 @@ class InvestigationOrchestrator:
         commander: Agent[CommanderBrief, RootCauseAssessment],
         publisher: ProgressPublisher | None = None,
         tool_timeout_s: float = 10.0,
+        patch_engineer: Agent[PatchBrief, PatchProposal] | None = None,
+        repository: RepositoryInspector | None = None,
     ) -> None:
         if not specialists:
             raise ValueError("at least one specialist agent is required")
+        if patch_engineer is not None and repository is None:
+            raise ValueError("a patch engineer requires a configured repository")
         self._specialists = list(specialists)
         self._advocate = advocate
         self._commander = commander
         self._publisher = publisher or NullPublisher()
         self._tool_timeout_s = tool_timeout_s
+        self._patch_engineer = patch_engineer
+        self._repository = repository
 
     async def investigate(
         self,
@@ -81,6 +91,7 @@ class InvestigationOrchestrator:
             data=data,
             audit=InvestigationAudit(),
             tool_timeout_s=self._tool_timeout_s,
+            repository=self._repository,
         )
         await self._publish(
             investigation_id, ProgressKind.INVESTIGATION_STARTED, "investigation started", 0.0
@@ -99,8 +110,19 @@ class InvestigationOrchestrator:
                 ctx,
                 CommanderBrief(evidence=evidence, findings=findings, challenge=challenge),
                 investigation_id,
-                progress_after=0.95,
+                progress_after=0.92,
             )
+            patch: PatchProposal | None = None
+            if self._patch_engineer is not None and self._repository is not None:
+                patch = await self._run_agent(
+                    self._patch_engineer,
+                    ctx,
+                    PatchBrief(evidence=evidence, assessment=assessment, findings=findings),
+                    investigation_id,
+                    progress_after=0.98,
+                )
+                # The model proposes; deterministic validation decides.
+                validate_patch(patch, self._repository)
         except BaseException:
             await self._publish(
                 investigation_id,
@@ -125,6 +147,7 @@ class InvestigationOrchestrator:
             started_at=started_at,
             completed_at=datetime.now(tz=UTC),
             usage=ctx.usage.total(),
+            patch=patch,
         )
 
     async def _run_specialists(
@@ -179,7 +202,9 @@ class InvestigationOrchestrator:
             investigation_id,
             ProgressKind.AGENT_STARTED,
             f"{agent.name} working",
-            progress_after - 0.1,
+            # Small offset keeps the stream monotonic across sequential agents
+            # (each start must not fall below the previous completion).
+            progress_after - 0.04,
             agent=agent.name,
         )
         result = await agent.investigate(ctx, data)

@@ -55,6 +55,18 @@ class CodeLocation(_LlmOutput):
     line_end: int | None = None
 
 
+class PatchProposal(_LlmOutput):
+    """A proposed remediation patch. Never applied automatically: it is
+    validated (every diff path must stay inside the configured repository)
+    and stored for a human to review."""
+
+    reasoning: str
+    affected_files: Annotated[list[str], Field(min_length=1)]
+    diff: str
+    confidence: Confidence
+    risks: list[str] = []
+
+
 class RootCauseAssessment(_LlmOutput):
     """The Incident Commander's final, validated verdict."""
 

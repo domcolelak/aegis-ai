@@ -16,6 +16,7 @@ from aegis.api.schemas import (
     GraphOut,
     IncidentOut,
     InvestigationOut,
+    PatchOut,
     ProgressEventOut,
     SourceIn,
     SourceOut,
@@ -123,6 +124,20 @@ async def get_investigation(
         challenge=record.challenge,
         findings=[FindingOut(agent=item.agent, finding=item.finding) for item in findings],
     )
+
+
+@router.get("/incidents/{incident_id}/patch", response_model=PatchOut)
+async def get_patch(
+    incident_id: UUID,
+    investigations: Annotated[InvestigationRepository, Depends(get_investigations)],
+) -> PatchOut:
+    record = await investigations.latest_for_incident(incident_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no investigation for this incident")
+    patch = await investigations.patch_for(record.investigation_id)
+    if patch is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no patch proposed for this incident")
+    return PatchOut.model_validate(patch)
 
 
 @router.post("/sources", response_model=SourceOut, status_code=status.HTTP_201_CREATED)

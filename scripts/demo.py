@@ -28,20 +28,23 @@ from aegis.detection import default_engine
 from aegis.events import LogEvent, RawLogEvent, Severity
 from aegis.graph import IncidentGraph
 from aegis.ingestion import IngestionSupervisor
+from aegis.inspection import RepositoryInspector
 from aegis.investigation import InvestigationOrchestrator, build_evidence
 from aegis.investigation.agents import (
+    CodeInvestigator,
     DatabaseInvestigator,
     DevilsAdvocate,
     IncidentCommander,
     LogAnalyst,
+    PatchEngineer,
 )
 from aegis.investigation.data import InvestigationDataStore
 from aegis.investigation.progress import ProgressEvent
 from aegis.investigation.providers import ScriptedProvider
 from aegis.investigation.providers.demo import demo_scripts
-from aegis.investigation.tools import ToolRegistry, default_tools
+from aegis.investigation.tools import ToolRegistry, code_tools, default_tools
 from aegis.parsing import ParsingStage
-from aegis.synthetic import generate, materialize
+from aegis.synthetic import generate, materialize, materialize_repo
 
 
 class PrintingPublisher:
@@ -114,14 +117,22 @@ async def run_demo(pace: float = 0.0) -> None:
     await asyncio.sleep(pace)
     print("4. Running the multi-agent investigation (scripted provider, offline)")
     provider = ScriptedProvider(demo_scripts())
-    registry = ToolRegistry(default_tools())
-    orchestrator = InvestigationOrchestrator(
-        specialists=[LogAnalyst(provider, registry), DatabaseInvestigator(provider, registry)],
-        advocate=DevilsAdvocate(provider, registry),
-        commander=IncidentCommander(provider, registry),
-        publisher=PrintingPublisher(pace),
-    )
-    result = await orchestrator.investigate(dataset, evidence)
+    registry = ToolRegistry([*default_tools(), *code_tools()])
+    with tempfile.TemporaryDirectory(prefix="aegis-demo-repo-") as repo_tmp:
+        repository = RepositoryInspector(materialize_repo(Path(repo_tmp)))
+        orchestrator = InvestigationOrchestrator(
+            specialists=[
+                LogAnalyst(provider, registry),
+                DatabaseInvestigator(provider, registry),
+                CodeInvestigator(provider, registry),
+            ],
+            advocate=DevilsAdvocate(provider, registry),
+            commander=IncidentCommander(provider, registry),
+            publisher=PrintingPublisher(pace),
+            patch_engineer=PatchEngineer(provider, registry),
+            repository=repository,
+        )
+        result = await orchestrator.investigate(dataset, evidence)
     assessment = result.assessment
     await asyncio.sleep(pace)
 
@@ -144,6 +155,12 @@ async def run_demo(pace: float = 0.0) -> None:
     print("RECOMMENDED ACTIONS:")
     for action in assessment.recommended_actions:
         print(f"  - {action}")
+    if result.patch is not None:
+        print()
+        print("PROPOSED PATCH (validated against the repository, never auto-applied):")
+        print(result.patch.diff)
+        for risk in result.patch.risks:
+            print(f"  risk: {risk}")
     print("=" * 72)
     print(f"done in {elapsed:.1f}s")
 
