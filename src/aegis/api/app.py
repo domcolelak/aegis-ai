@@ -50,6 +50,7 @@ from aegis.observability import PrometheusMetrics, configure_logging
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from aegis.api.bus import EventBus
     from aegis.api.service import AnalysisService
     from aegis.investigation.progress import ProgressPublisher
     from aegis.investigation.providers.base import LLMProvider
@@ -81,10 +82,16 @@ def create_app(
     settings: Settings | None = None,
     *,
     analysis_service: AnalysisService | None = None,
-    bus: InProcessEventBus | None = None,
+    bus: EventBus | None = None,
 ) -> FastAPI:
     settings = settings or Settings()
-    bus = bus or InProcessEventBus()
+    if bus is None:
+        if settings.event_bus == "redis":
+            from aegis.api.redis_bus import RedisEventBus
+
+            bus = RedisEventBus.from_url(settings.redis_url)
+        else:
+            bus = InProcessEventBus()
     configure_logging(level=settings.log_level, json_logs=settings.json_logs)
     metrics = PrometheusMetrics()
 
@@ -124,6 +131,17 @@ def create_app(
                 repository=repository,
             )
 
+        arq_pool = None
+        memory_queue = None
+        if settings.task_queue == "arq":
+            from arq import create_pool
+            from arq.connections import RedisSettings
+
+            from aegis.api.queues import ArqMemoryQueue
+
+            arq_pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+            memory_queue = ArqMemoryQueue(arq_pool)
+
         app.state.incidents = IncidentRepository(sessions)
         app.state.investigations = InvestigationRepository(sessions)
         app.state.sources = SourceRepository(sessions)
@@ -136,6 +154,7 @@ def create_app(
             bus=bus,
             executor=executor,
             metrics=metrics,
+            memory_queue=memory_queue,
         )
         app.state.analysis_service = service
         try:
@@ -143,6 +162,12 @@ def create_app(
         finally:
             await service.shutdown()
             executor.shutdown(wait=False, cancel_futures=True)
+            if arq_pool is not None:
+                await arq_pool.aclose()
+            from aegis.api.redis_bus import RedisEventBus
+
+            if isinstance(bus, RedisEventBus):
+                await bus.aclose()
             await engine.dispose()
 
     app = FastAPI(

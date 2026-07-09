@@ -35,3 +35,11 @@ class Settings(BaseSettings):
     # Read-only source inspection root; enables the Code Investigator and
     # Patch Engineer when set.
     repository_root: str | None = None
+
+    redis_url: str = "redis://localhost:6379/0"
+    # "inline" runs memory indexing in-process; "arq" enqueues it for the
+    # distributed worker (deduplicated by job id).
+    task_queue: Literal["inline", "arq"] = "inline"
+    # "memory" is single-process; "redis" fans progress events out across
+    # processes so WebSocket clients can attach to any API instance.
+    event_bus: Literal["memory", "redis"] = "memory"

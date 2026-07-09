@@ -378,6 +378,16 @@ class MemoryRepository:
             session.add(record)
         return record.id
 
+    async def exists_for(self, incident_id: UUID) -> bool:
+        """Idempotency check for the distributed remember task."""
+        async with self._sessions() as session:
+            stmt = (
+                select(func.count())
+                .select_from(IncidentMemoryRecord)
+                .where(IncidentMemoryRecord.incident_id == incident_id)
+            )
+            return int((await session.execute(stmt)).scalar_one()) > 0
+
     async def similar(
         self,
         embedding: Sequence[float],

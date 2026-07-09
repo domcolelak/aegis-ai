@@ -15,12 +15,15 @@ services:
       timeout: 5s
       retries: 10
 
-  # Reserved for the distributed-worker milestone (arq). Kept in the stack so
-  # the API's future queue configuration points somewhere real.
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   migrate:
     build:
@@ -41,11 +44,34 @@ services:
       - "8000:8000"
     environment:
       AEGIS_DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
+      AEGIS_REDIS_URL: redis://redis:6379/0
+      # Distributed mode: memory indexing runs in the arq worker and progress
+      # events fan out over Redis pub/sub.
+      AEGIS_TASK_QUEUE: arq
+      AEGIS_EVENT_BUS: redis
       # scripted = fully offline demo; set to "anthropic" + ANTHROPIC_API_KEY
       # for real investigations.
       AEGIS_LLM_PROVIDER: scripted
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: ["arq", "aegis.workers.tasks.WorkerSettings"]
+    environment:
+      AEGIS_DATABASE_URL: postgresql+asyncpg://aegis:aegis@postgres:5432/aegis
+      AEGIS_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
