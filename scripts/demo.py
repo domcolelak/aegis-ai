@@ -1,15 +1,20 @@
 """Offline end-to-end demo: no database, no API key, no network.
 
-    uv run python scripts/demo.py
+    uv run python scripts/demo.py [--pace SECONDS]
 
 Generates the synthetic incident, runs the full deterministic pipeline
 (ingestion -> process-pool parsing -> detection -> correlation -> causal
 graph), then the multi-agent investigation with the scripted provider, and
 prints the validated RootCauseAssessment.
+
+``--pace`` inserts presentation pauses between stages (the pipeline itself
+finishes in about a second, which is great for users and terrible for
+screen recordings).
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import tempfile
 import time
@@ -40,12 +45,16 @@ from aegis.synthetic import generate, materialize
 
 
 class PrintingPublisher:
+    def __init__(self, pace: float = 0.0) -> None:
+        self._pace = pace
+
     async def publish(self, event: ProgressEvent) -> None:
         agent = f" [{event.agent}]" if event.agent else ""
         print(f"  {event.progress:5.0%}{agent} {event.message}")
+        await asyncio.sleep(self._pace / 2)
 
 
-async def run_demo() -> None:
+async def run_demo(pace: float = 0.0) -> None:
     started = time.perf_counter()
     incident = generate(seed=7)
 
@@ -67,6 +76,7 @@ async def run_demo() -> None:
                 collector = tg.create_task(collect())
     events = sorted(collector.result(), key=lambda event: event.timestamp)
     print(f"   {len(events)} events parsed")
+    await asyncio.sleep(pace)
 
     print("2. Detecting anomalies")
     detector = default_engine()
@@ -79,6 +89,7 @@ async def run_demo() -> None:
             f"(confidence {cluster.confidence:.2f})"
         )
 
+    await asyncio.sleep(pace)
     print("3. Correlating and building the causal graph")
     boost = {
         event_id: cluster.confidence
@@ -100,6 +111,7 @@ async def run_demo() -> None:
     top = evidence.root_candidates[0]
     print(f"   top root candidate: {top.event.service}: {top.event.message[:70]}")
 
+    await asyncio.sleep(pace)
     print("4. Running the multi-agent investigation (scripted provider, offline)")
     provider = ScriptedProvider(demo_scripts())
     registry = ToolRegistry(default_tools())
@@ -107,10 +119,11 @@ async def run_demo() -> None:
         specialists=[LogAnalyst(provider, registry), DatabaseInvestigator(provider, registry)],
         advocate=DevilsAdvocate(provider, registry),
         commander=IncidentCommander(provider, registry),
-        publisher=PrintingPublisher(),
+        publisher=PrintingPublisher(pace),
     )
     result = await orchestrator.investigate(dataset, evidence)
     assessment = result.assessment
+    await asyncio.sleep(pace)
 
     elapsed = time.perf_counter() - started
     print()
@@ -136,4 +149,7 @@ async def run_demo() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(run_demo())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--pace", type=float, default=0.0, help="pause between stages (seconds)")
+    args = parser.parse_args()
+    asyncio.run(run_demo(pace=args.pace))
