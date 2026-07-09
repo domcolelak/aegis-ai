@@ -1,5 +1,9 @@
 # Aegis AI — Autonomous Incident Investigator
 
+[![CI](https://github.com/domcolelak/aegis-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/domcolelak/aegis-ai/actions/workflows/ci.yml)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Aegis AI is an autonomous incident investigation engine written in Python. It ingests large
 volumes of distributed system logs, normalizes and correlates events, constructs a weighted
 causal evidence graph, and orchestrates specialized AI investigators that determine the
