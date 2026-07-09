@@ -6,11 +6,12 @@ causal evidence graph, and orchestrates specialized AI investigators that determ
 probable root cause — validated, audited, and streamed live over WebSocket.
 
 <p align="center">
-  <img src="docs/demo.svg" alt="Terminal recording of scripts/demo.py: the pipeline parses 781 events across 5 services, detects anomaly clusters, builds a 227-node causal graph, runs four AI investigators, and reports the root cause (database session leak, 82% confidence) with the full failure chain." width="780">
+  <img src="docs/demo.gif" alt="Terminal recording of scripts/demo.py: the pipeline parses 781 events across 5 services, detects anomaly clusters, builds a 227-node causal graph, runs four AI investigators, and reports the root cause (database session leak, 82% confidence) with the full failure chain." width="820">
 </p>
 
-That output is real: `uv run python scripts/demo.py` produces it in about a second, offline,
-with no API key and no database.
+A real recording (`asciinema`, [docs/demo.cast](docs/demo.cast)) of
+`uv run python scripts/demo.py` — the whole system, offline, with no API key and no
+database. Without the presentation `--pace` it finishes in about a second.
 
 ## Architecture
 
