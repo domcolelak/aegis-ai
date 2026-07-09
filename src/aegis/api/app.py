@@ -31,16 +31,19 @@ from aegis.db import (
     create_db_engine,
     create_session_factory,
 )
+from aegis.inspection import RepositoryInspector
 from aegis.investigation.agents import (
+    CodeInvestigator,
     DatabaseInvestigator,
     DevilsAdvocate,
     IncidentCommander,
     LogAnalyst,
+    PatchEngineer,
 )
 from aegis.investigation.orchestrator import InvestigationOrchestrator
 from aegis.investigation.providers import RateLimitedProvider, RetryingProvider, ScriptedProvider
 from aegis.investigation.providers.demo import demo_scripts
-from aegis.investigation.tools import ToolRegistry, default_tools
+from aegis.investigation.tools import ToolRegistry, code_tools, default_tools
 from aegis.memory import HashingEmbedder, IncidentMemory, VoyageEmbedder
 from aegis.observability import PrometheusMetrics, configure_logging
 
@@ -99,17 +102,26 @@ def create_app(
         sessions = create_session_factory(engine)
         executor = ProcessPoolExecutor(max_workers=settings.parser_workers)
         provider = _build_provider(settings)
-        registry = ToolRegistry(default_tools())
+        repository = (
+            RepositoryInspector(settings.repository_root) if settings.repository_root else None
+        )
+        tools = [*default_tools(), *(code_tools() if repository else ())]
+        registry = ToolRegistry(tools)
 
         def orchestrator_factory(publisher: ProgressPublisher) -> InvestigationOrchestrator:
+            specialists = [
+                LogAnalyst(provider, registry),
+                DatabaseInvestigator(provider, registry),
+            ]
+            if repository is not None:
+                specialists.append(CodeInvestigator(provider, registry))
             return InvestigationOrchestrator(
-                specialists=[
-                    LogAnalyst(provider, registry),
-                    DatabaseInvestigator(provider, registry),
-                ],
+                specialists=specialists,
                 advocate=DevilsAdvocate(provider, registry),
                 commander=IncidentCommander(provider, registry),
                 publisher=publisher,
+                patch_engineer=PatchEngineer(provider, registry) if repository else None,
+                repository=repository,
             )
 
         app.state.incidents = IncidentRepository(sessions)

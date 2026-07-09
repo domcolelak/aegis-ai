@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from uuid import UUID
 
+    from aegis.inspection import RepositoryInspector
     from aegis.investigation.data import InvestigationDataStore
 
 
@@ -74,6 +75,8 @@ class InvestigationContext:
     audit: InvestigationAudit
     tool_timeout_s: float = 10.0
     usage: UsageMeter = field(default_factory=UsageMeter)
+    # Optional: source-code inspection jail; code tools fail cleanly when absent.
+    repository: RepositoryInspector | None = None
 
 
 class Tool[TArgs: BaseModel](ABC):

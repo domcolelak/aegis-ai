@@ -10,7 +10,30 @@ the Anthropic provider and only this module stops being used.
 from __future__ import annotations
 
 from aegis.investigation.providers.base import Completion
-from aegis.investigation.providers.scripted import json_completion
+from aegis.investigation.providers.scripted import json_completion, tool_call_completion
+
+_DEMO_DIFF = """\
+--- a/app/services/booking_service.py
++++ b/app/services/booking_service.py
+@@ -5,12 +5,8 @@
+
+
+ async def create_booking(request):
+-    session = SessionLocal()
+-    booking = await _insert_booking(session, request)
+-    # BUG: when this call raises (e.g. TimeoutError under Stripe latency),
+-    # the function unwinds without ever closing the session -- each timeout
+-    # permanently consumes one connection from the pool.
+-    await stripe_client.create_payment(booking.total, booking.reference)
+-    await session.commit()
+-    await session.close()
+-    return booking
++    async with SessionLocal() as session:
++        booking = await _insert_booking(session, request)
++        await stripe_client.create_payment(booking.total, booking.reference)
++        await session.commit()
++        return booking
+"""
 
 
 def demo_scripts() -> dict[str, list[Completion]]:
@@ -63,6 +86,55 @@ def demo_scripts() -> dict[str, list[Completion]]:
                     ],
                 }
             )
+        ],
+        "code_investigator": [
+            tool_call_completion("search_source", {"query": "SessionLocal()"}),
+            tool_call_completion(
+                "read_source", {"path": "app/services/booking_service.py"}, call_id="call-2"
+            ),
+            json_completion(
+                {
+                    "summary": (
+                        "create_booking opens a session directly and only closes it on "
+                        "the happy path; the stripe call sits between open and close."
+                    ),
+                    "hypotheses": [
+                        {
+                            "statement": (
+                                "app/services/booking_service.py:8 acquires SessionLocal() "
+                                "without a context manager; when create_payment raises at "
+                                "line 13 the session is never closed."
+                            ),
+                            "confidence": 0.9,
+                            "supporting_evidence": [
+                                "session lifecycle spans the external call with no try/finally",
+                                "pool exhaustion in the logs matches one leaked connection "
+                                "per stripe timeout",
+                            ],
+                        }
+                    ],
+                }
+            ),
+        ],
+        "patch_engineer": [
+            tool_call_completion("read_source", {"path": "app/services/booking_service.py"}),
+            json_completion(
+                {
+                    "reasoning": (
+                        "Wrap the session in an async context manager so every exit "
+                        "path -- including the Stripe timeout -- releases the "
+                        "connection back to the pool."
+                    ),
+                    "affected_files": ["app/services/booking_service.py"],
+                    "diff": _DEMO_DIFF,
+                    "confidence": 0.85,
+                    "risks": [
+                        "commit now happens inside the context manager scope; verify "
+                        "no caller relied on reading the booking after an implicit "
+                        "rollback"
+                    ],
+                }
+            ),
         ],
         "devils_advocate": [
             json_completion(

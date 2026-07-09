@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from aegis.investigation.assessment import AdvocateChallenge, SpecialistFinding
+    from aegis.investigation.assessment import (
+        AdvocateChallenge,
+        RootCauseAssessment,
+        SpecialistFinding,
+    )
     from aegis.investigation.evidence import EvidenceBundle
 
 
@@ -23,3 +27,10 @@ class CommanderBrief:
     evidence: EvidenceBundle
     findings: Mapping[str, SpecialistFinding]
     challenge: AdvocateChallenge
+
+
+@dataclass(slots=True, frozen=True)
+class PatchBrief:
+    evidence: EvidenceBundle
+    assessment: RootCauseAssessment
+    findings: Mapping[str, SpecialistFinding]

@@ -8,6 +8,7 @@ from aegis.investigation.tools.base import (
     ToolResult,
 )
 from aegis.investigation.tools.builtin import default_tools
+from aegis.investigation.tools.code import code_tools
 from aegis.investigation.tools.registry import ToolRegistry
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "ToolExecution",
     "ToolRegistry",
     "ToolResult",
+    "code_tools",
     "default_tools",
 ]

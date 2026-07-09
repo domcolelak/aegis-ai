@@ -81,6 +81,18 @@ class InvestigationOut(BaseModel):
     findings: list[FindingOut]
 
 
+class PatchOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    investigation_id: UUID
+    reasoning: str
+    diff: str
+    affected_files: list[str]
+    confidence: float
+    risks: list[str]
+    created_at: datetime
+
+
 class ProgressEventOut(BaseModel):
     """The typed WebSocket wire format."""
 
