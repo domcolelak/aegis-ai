@@ -40,7 +40,8 @@ logger = structlog.get_logger(__name__)
 if TYPE_CHECKING:
     from concurrent.futures import Executor
 
-    from aegis.api.bus import InProcessEventBus
+    from aegis.api.bus import EventBus
+    from aegis.api.queues import MemoryQueue
     from aegis.api.schemas import AnalyzeRequest
     from aegis.db import (
         EventRepository,
@@ -67,9 +68,10 @@ class IncidentAnalysisService:
         investigations: InvestigationRepository,
         memory: IncidentMemory,
         orchestrator_factory: OrchestratorFactory,
-        bus: InProcessEventBus,
+        bus: EventBus,
         executor: Executor,
         metrics: Metrics | None = None,
+        memory_queue: MemoryQueue | None = None,
     ) -> None:
         self._events = events
         self._incidents = incidents
@@ -79,6 +81,9 @@ class IncidentAnalysisService:
         self._bus = bus
         self._executor = executor
         self._metrics = metrics or NullMetrics()
+        # None = remember inline; a queue ships the embedding+insert work to
+        # the arq worker (deduplicated, idempotent).
+        self._memory_queue = memory_queue
         self._running: set[asyncio.Task[None]] = set()
 
     async def start_analysis(self, request: AnalyzeRequest) -> tuple[UUID, UUID]:
@@ -170,7 +175,10 @@ class IncidentAnalysisService:
             )
 
             await self._investigations.persist(incident_id, result)
-            await self._memory.remember(incident_id, result.assessment)
+            if self._memory_queue is not None:
+                await self._memory_queue.enqueue_remember(incident_id, result.assessment)
+            else:
+                await self._memory.remember(incident_id, result.assessment)
             await self._incidents.set_status(incident_id, "completed")
 
             for execution in result.tool_executions:

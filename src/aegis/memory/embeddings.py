@@ -27,6 +27,8 @@ from aegis.db.models import EMBEDDING_DIM
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from aegis.core.config import Settings
+
 
 class EmbeddingProvider(Protocol):
     async def embed(self, texts: Sequence[str]) -> list[list[float]]: ...
@@ -55,6 +57,15 @@ class HashingEmbedder:
         if norm == 0.0:
             return vector
         return [value / norm for value in vector]
+
+
+def build_embedder(settings: Settings) -> EmbeddingProvider:
+    """Settings-driven construction shared by the API and the worker."""
+    if settings.embedding_provider == "voyage":
+        if settings.voyage_api_key is None:
+            raise ValueError("AEGIS_VOYAGE_API_KEY is required for the voyage embedder")
+        return VoyageEmbedder(settings.voyage_api_key, model=settings.voyage_model)
+    return HashingEmbedder()
 
 
 class VoyageEmbedder:

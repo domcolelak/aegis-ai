@@ -12,13 +12,24 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from contextlib import AbstractAsyncContextManager
     from uuid import UUID
 
     from aegis.investigation.progress import ProgressEvent
+
+
+class EventBus(Protocol):
+    """Publish/subscribe seam; in-process and Redis implementations conform."""
+
+    async def publish(self, topic: UUID, event: ProgressEvent) -> None: ...
+
+    def subscribe(
+        self, topic: UUID
+    ) -> AbstractAsyncContextManager[asyncio.Queue[ProgressEvent]]: ...
 
 
 class InProcessEventBus:
@@ -50,7 +61,7 @@ class InProcessEventBus:
 class TopicPublisher:
     """Adapts the bus to the ProgressPublisher protocol for one topic."""
 
-    def __init__(self, bus: InProcessEventBus, topic: UUID) -> None:
+    def __init__(self, bus: EventBus, topic: UUID) -> None:
         self._bus = bus
         self._topic = topic
 
