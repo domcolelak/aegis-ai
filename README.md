@@ -37,16 +37,20 @@ flowchart TB
     MEM[(pgvector<br/>incident memory)] -->|top-k similar incidents| EV
     EV --> ORCH["Investigation orchestrator (TaskGroup)"]
     subgraph agents["AI investigators"]
-        LA[Log Analyst] --- DB[DB Investigator]
+        LA[Log Analyst] --- DB[DB Investigator] --- CI2[Code Investigator]
         DA[Devil's Advocate]
         IC[Incident Commander]
+        PE[Patch Engineer]
     end
+    REPO["RepositoryInspector<br/>(read-only, root-jailed)"] <--> agents
     ORCH --> agents
     agents <-->|"typed, audited,<br/>budgeted tools"| EV
     agents --> RCA["RootCauseAssessment<br/>(Pydantic-validated)"]
+    agents --> PATCH["PatchProposal: unified diff,<br/>path-validated, never auto-applied"]
     RCA --> PG
-    RCA --> MEM
-    ORCH -->|typed progress events| WS["WebSocket<br/>/ws/incidents/{id}"]
+    PATCH --> PG
+    RCA -->|arq task, idempotent| MEM
+    ORCH -->|"typed progress events<br/>(in-process or Redis pub/sub)"| WS["WebSocket<br/>/ws/incidents/{id}"]
 ```
 
 The design principle throughout: **deterministic Python reduces the problem space; AI
@@ -81,6 +85,7 @@ websocat ws://localhost:8000/ws/incidents/<incident_id>
 # Read the results
 curl localhost:8000/api/v1/incidents/<incident_id>/investigation
 curl localhost:8000/api/v1/incidents/<incident_id>/graph
+curl localhost:8000/api/v1/incidents/<incident_id>/patch   # when a repository is configured
 curl localhost:8000/metrics
 ```
 
@@ -107,9 +112,16 @@ investigations: `AEGIS_LLM_PROVIDER=anthropic` plus `ANTHROPIC_API_KEY`.
 - **AI with guardrails, not vibes** — a generic `Agent[TInput, TFinding]` ABC owns the tool
   loop: per-agent tool budgets, per-call timeouts, max turns, and JSON output validated by
   Pydantic with exactly one correction attempt. Pydantic argument models double as the tool
-  schema shown to the model — one source of truth. Every tool execution lands in an audit
-  trail; token usage is metered per turn. The Devil's Advocate exists to attack the leading
-  hypothesis, and the Commander must report surviving contradicting evidence.
+  schema shown to the model — one source of truth across twelve tools. Every tool execution
+  lands in an audit trail; token usage is metered per turn. The Devil's Advocate exists to
+  attack the leading hypothesis, and the Commander must report surviving contradicting
+  evidence.
+- **Source inspection and patch proposals with a security model** — the Code Investigator
+  works through a root-jailed, read-only `RepositoryInspector` (traversal and absolute
+  paths rejected on both POSIX and Windows semantics, size and window caps, no execution of
+  repository code). The Patch Engineer's unified diff is validated deterministically —
+  every path in the diff must resolve inside the repository and match the declared file
+  list — then stored for human review. **Nothing is ever auto-applied.**
 - **Provider seam** — agents depend on an `LLMProvider` protocol; the Anthropic adapter is
   one thin module. Resilience is composed around any provider: semaphore concurrency cap,
   transient-only retries with full-jitter backoff and a shared retry budget (a tool that
@@ -130,20 +142,26 @@ investigations: `AEGIS_LLM_PROVIDER=anthropic` plus `ANTHROPIC_API_KEY`.
 
 The stack is asyncio-native end to end (async SQLAlchemy, httpx, async SDKs). Celery has no
 first-class async task support, so adopting it would mean either an event loop per task
-invocation or a second, synchronous database stack living alongside the async one. When
-distributed workers land (see roadmap), the plan is **arq** — Redis-backed and
-asyncio-native — keeping one coherent concurrency model. The tradeoff is documented here
-precisely because "we picked the famous tool" is not an architecture decision.
+invocation or a second, synchronous database stack living alongside the async one. The
+distributed workers therefore run on **arq** — Redis-backed, asyncio-native, sharing the
+exact same async persistence layer as the API. The tradeoff is documented here precisely
+because "we picked the famous tool" is not an architecture decision.
+
+What is distributed and what is not: only coarse, latency-insensitive work leaves the
+process (incident-memory indexing — embedding + insert), with two-layer idempotency
+(deterministic job-id deduplication at enqueue, existence check inside the task). Detection
+and correlation stay in-process: they operate on data already in memory, and shipping it
+over Redis would cost more than the computation.
 
 ## Development
 
 ```bash
 uv sync
-uv run pytest -q            # 156 unit + e2e tests, no infrastructure needed
+uv run pytest -q            # 178 unit + e2e tests, no infrastructure needed
 uv run mypy                 # strict
 uv run ruff check .
-uv run pytest -m integration  # needs AEGIS_TEST_DATABASE_URL (CI runs these
-                              # against real PostgreSQL + pgvector)
+uv run pytest -m integration  # needs AEGIS_TEST_DATABASE_URL / _REDIS_URL (CI
+                              # runs these against real PostgreSQL + Redis)
 ```
 
 The end-to-end test runs the entire deterministic pipeline on a seeded five-service
@@ -156,16 +174,15 @@ orchestration are all exercised deterministically.
 
 **Implemented** (everything described above): ingestion (file / NDJSON / Docker json-file
 replay), process-pool parsing, four anomaly detectors, five correlation strategies, the
-causal graph, four AI investigators with seven tools, pgvector incident memory, PostgreSQL
-persistence with Alembic, FastAPI + WebSocket, Prometheus metrics, structured logging,
-Docker Compose, CI with real-database integration tests.
+causal graph, six AI agents (Log Analyst, DB Investigator, Code Investigator, Devil's
+Advocate, Incident Commander, Patch Engineer) with twelve tools, root-jailed source
+inspection with validated patch proposals, pgvector incident memory, arq distributed
+workers, Redis pub/sub event bus, PostgreSQL persistence with Alembic, FastAPI + WebSocket,
+Prometheus metrics, structured logging, Docker Compose (api + worker + postgres + redis),
+CI with real PostgreSQL/Redis integration tests.
 
 **Roadmap** (designed for, intentionally not shipped yet):
 
-- Distributed workers (arq) for embedding generation and incident indexing; Redis pub/sub
-  replacing the in-process event bus for multi-process deployments.
-- Read-only source-code inspection (path-traversal-guarded repository access) and the Code
-  Investigator agent; patch proposals as unified diffs — never auto-applied.
 - Live ingestion transports: Docker daemon API, syslog, Kafka, HTTP streaming.
 - `log_events` range partitioning + retention jobs (documented threshold: ~50–100M rows).
 - OpenTelemetry traces on the architecture's existing ID propagation.
